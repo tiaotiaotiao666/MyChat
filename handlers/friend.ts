@@ -1,4 +1,4 @@
-import { IncomingMessage, OutgoingMessage, ClientContext } from './types';
+﻿import { IncomingMessage, OutgoingMessage, ClientContext } from './types';
 import * as userStore from '../store/users';
 
 export function handleFriendSearch(msg: IncomingMessage, ctx: ClientContext): OutgoingMessage[] {
@@ -29,7 +29,7 @@ export function handleFriendSearch(msg: IncomingMessage, ctx: ClientContext): Ou
         data: {
             found: true,
             userId: target.userId,
-            nickname: target.nickname,
+            username: target.username,
             avatar: target.avatar
         }
     });
@@ -59,31 +59,32 @@ export function handleFriendRequest(msg: IncomingMessage, ctx: ClientContext, br
         result.push({type: 'error', data: {code: 400, message: '已经发送过好友请求'}});
         return result;
     }
-    result.push({type: 'system', data: { text: `好友请求已发送给 ${toUser.nickname}` }});
-    broadcastTo(targetUserId, {type: 'friend_request', data: {fromUserId: fromUser.userId, fromNickname: fromUser.nickname, fromAvatar: fromUser.avatar}});
+    result.push({type: 'system', data: { text: `好友请求已发送给 ${toUser.username}` }});
+    broadcastTo(targetUserId, {type: 'friend_request', data: {fromUserId: fromUser.userId, fromUsername: fromUser.username, fromAvatar: fromUser.avatar}});
     return result;
 }
 
 export function handleFriendRespond(msg: IncomingMessage, ctx: ClientContext, broadcastTo: (userId: string, msg: OutgoingMessage) => void): OutgoingMessage[] {
     const result: OutgoingMessage[] = [];
     if(!ctx.userId){
-        result.push({type: 'error', data: {message: '未登录'}});
+        result.push({type: 'error', data: {code: 401, message: '未登录'}});
         return result;
     }
     const fromUserId = msg.data.fromUserId as string;
     const agree = msg.data.agree as boolean;
     const toUser = userStore.findByUserId(ctx.userId);
     if(!toUser){
-        result.push({type: 'error', data: {message: '用户不存在'}});
+        result.push({type: 'error', data: {code: 404, message: '用户不存在'}});
         return result;
     }
     const ok = userStore.respondFriendRequest(toUser, fromUserId, agree);
     if(!ok){
-        result.push({type: 'error', data: {message: '好友请求不存在或已处理'}});
+        result.push({type: 'error', data: {code: 400, message: '好友请求不存在或已处理'}});
         return result;
     }
     result.push({type: 'system', data: {text: agree ? '已同意好友请求' : '已拒绝好友请求'}});
-    broadcastTo(fromUserId, {type: 'friend_response', data: {fromUserId: ctx.userId, agree}});
+    const fromUser = userStore.findByUserId(fromUserId);
+    broadcastTo(fromUserId, {type: 'friend_response', data: {fromUserId: ctx.userId, fromUsername: toUser.username, fromAvatar: toUser.avatar, agree}});
     return result;
 }
 
@@ -100,6 +101,14 @@ export function handleDeleteFriend(msg: IncomingMessage, ctx: ClientContext, bro
         return result;
     } 
     result.push({type: 'system', data: {text: '好友已删除'}});
-    broadcastTo(targetUserId, {type: 'friend_deleted', data: {byUserId: ctx.userId}});
+    const fromUser = userStore.findByUserId(ctx.userId);
+    broadcastTo(targetUserId, {
+        type: 'friend_deleted',
+        data: {
+            byUserId: ctx.userId,
+            byUsername: fromUser?.username ?? '',
+            byAvatar: fromUser?.avatar ?? ''
+        }
+    });
     return result;
 }

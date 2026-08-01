@@ -1,14 +1,14 @@
-import { IncomingMessage, OutgoingMessage, ClientContext } from './types';
+﻿import { IncomingMessage, OutgoingMessage, ClientContext } from './types';
 import * as userStore from '../store/users';
 import * as groupStore from '../store/groups';
+import * as messageStore from '../store/messages';
 
 export function handleRegister(msg: IncomingMessage, ctx: ClientContext): OutgoingMessage[] {
     const result: OutgoingMessage[] = [];
     const username = msg.data.username as string;
     const password = msg.data.password as string;
-    const nickname = msg.data.nickname as string;
     const avatar = msg.data.avatar as string;
-    if(!username || !password || !nickname || !avatar){
+    if(!username || !password || !avatar){
         result.push({type: 'register_response', data: {success: false, error: '缺少必填字段'}});
         return result;
     }
@@ -25,12 +25,47 @@ export function handleRegister(msg: IncomingMessage, ctx: ClientContext): Outgoi
         result.push({type: 'register_response', data: {success: false, error: '用户名已存在'}});
         return result;
     }
-    const user = userStore.createUser(username, password, nickname, avatar);
+    const user = userStore.createUser(username, password, avatar);
     ctx.userId = user.userId;
+
+    const friends = userStore.getFriendsList(user);
+    const friendRequests = user.friendRequests.filter(r => r.status === 'pending');
+    const groups = groupStore.getGroupsForUser(user.userId);
+
+    const friendsWithLastMsg = friends.map(f => {
+        const lastMsg = messageStore.getPrivateLastMessage(user.userId, f.userId);
+        return {
+            ...f,
+            lastMessage: lastMsg ? lastMsg.content : '',
+            lastTime: lastMsg ? lastMsg.timestamp : ''
+        };
+    });
+
+    const groupsWithLastMsg = groups.map(g => {
+        const lastMsg = messageStore.getGroupLastMessage(g.groupId);
+        return {
+            ...g,
+            lastMessage: lastMsg ? lastMsg.content : '',
+            lastTime: lastMsg ? lastMsg.timestamp : ''
+        };
+    });
+
+    const unreadCounts = userStore.getUnreadCounts(user.userId);
+    const groupJoinRequests = groupStore.getPendingJoinRequestsForOwner(user.userId);
 
     result.push({
         type: 'register_response',
-        data: {success: true, userId: user.userId, nickname: user.nickname, avatar: user.avatar}
+        data: {
+            success: true,
+            userId: user.userId,
+            username: user.username,
+            avatar: user.avatar,
+            friends: friendsWithLastMsg,
+            friendRequests,
+            groups: groupsWithLastMsg,
+            unreadCounts,
+            groupJoinRequests
+        }
     })
     return result;
 }
@@ -55,7 +90,30 @@ export function handleLogin(msg: IncomingMessage, ctx: ClientContext): OutgoingM
     ctx.userId = user.userId;
     const friends = userStore.getFriendsList(user);
     const friendRequests = user.friendRequests.filter(r => r.status === 'pending');
-    result.push({type: 'login_response', data: {success: true, userId: user.userId, nickname: user.nickname, avatar: user.avatar, friends, friendRequests, groups: groupStore.getGroupsForUser(user.userId)}});
+    const groups = groupStore.getGroupsForUser(user.userId);
+    
+    const friendsWithLastMsg = friends.map(f => {
+        const lastMsg = messageStore.getPrivateLastMessage(user.userId, f.userId);
+        return {
+            ...f,
+            lastMessage: lastMsg ? lastMsg.content : '',
+            lastTime: lastMsg ? lastMsg.timestamp : ''
+        };
+    });
+    
+    const groupsWithLastMsg = groups.map(g => {
+        const lastMsg = messageStore.getGroupLastMessage(g.groupId);
+        return {
+            ...g,
+            lastMessage: lastMsg ? lastMsg.content : '',
+            lastTime: lastMsg ? lastMsg.timestamp : ''
+        };
+    });
+    
+    const unreadCounts = userStore.getUnreadCounts(user.userId);
+    const groupJoinRequests = groupStore.getPendingJoinRequestsForOwner(user.userId);
+    
+    result.push({type: 'login_response', data: {success: true, userId: user.userId, username: user.username, avatar: user.avatar, friends: friendsWithLastMsg, friendRequests, groups: groupsWithLastMsg, unreadCounts, groupJoinRequests}});
 
     return result;
 }

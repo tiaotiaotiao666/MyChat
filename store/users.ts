@@ -1,10 +1,10 @@
-import * as fs from 'fs';
+﻿import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
 
 export interface FriendRequest{
     from: string;
-    nickname: string;
+    username: string;
     avatar: string;
     status: 'pending' | 'accepted' | 'rejected';
 }
@@ -13,10 +13,10 @@ export interface User{
     userId: string;
     username: string;
     password: string;
-    nickname: string;
     avatar: string;
     friends: string[];
     friendRequests: FriendRequest[];
+    unreadCounts: Record<string, number>;
     createdAt: string;
 }
 
@@ -24,23 +24,29 @@ let users: User[] = [];
 let nextUserId = 1001;
 const DATA_DIR = path.join(__dirname, '..', 'data');
 const USERS_FILE = path.join(DATA_DIR,'users.json');
+
+function safeReadUsers(): User[] {
+    if(!fs.existsSync(USERS_FILE)) return [];
+    const raw = fs.readFileSync(USERS_FILE, 'utf-8');
+    if(raw.trim() === '') return [];
+    return JSON.parse(raw) as User[];
+}
+
 export function loadUsers(){
     if(!fs.existsSync(DATA_DIR)){
         fs.mkdirSync(DATA_DIR, { recursive: true });
     }
-    if(fs.existsSync(USERS_FILE)){
-        const raw = fs.readFileSync(USERS_FILE, 'utf-8');
-        users = JSON.parse(raw);
-        if(users.length > 0){
-            let maxId = 0;
-            for(const u of users){
-                const num = parseInt(u.userId.replace('u_', ''));
-                if(num > maxId){
-                    maxId = num;
-                }
+    const loaded = safeReadUsers();
+    if(loaded.length > 0){
+        users = loaded;
+        let maxId = 0;
+        for(const u of users){
+            const num = parseInt(u.userId.replace('u_', ''));
+            if(num > maxId){
+                maxId = num;
             }
-            nextUserId = maxId + 1;
         }
+        nextUserId = maxId + 1;
     }
 }
 
@@ -60,22 +66,32 @@ export function findByUserId(userId: string): User | undefined {
 }
 
 export function hashPassword(password: string): string {
-    return crypto.createHash('sha256').update(password).digest('hex');
+    const salt = crypto.randomBytes(16).toString('hex');
+    const digest = crypto.createHash('sha256').update(salt + password).digest('hex');
+    return `${salt}:${digest}`;
 }
 
 export function verifyPassword(user: User, password: string): boolean {
-    return hashPassword(password) === user.password;
+    const stored = user.password || '';
+    const idx = stored.indexOf(':');
+    if (idx <= 0) {
+        return crypto.createHash('sha256').update(password).digest('hex') === stored;
+    }
+    const salt = stored.slice(0, idx);
+    const expectDigest = stored.slice(idx + 1);
+    const actualDigest = crypto.createHash('sha256').update(salt + password).digest('hex');
+    return actualDigest === expectDigest;
 }
 
-export function createUser(username: string, password: string, nickname: string, avatar: string): User {
+export function createUser(username: string, password: string, avatar: string): User {
     const user: User = {
         userId: 'u_' + nextUserId,
         username,
         password: hashPassword(password),
-        nickname,
         avatar,
         friends: [],
         friendRequests: [],
+        unreadCounts: {},
         createdAt: new Date().toISOString(),
     };
     users.push(user);
@@ -100,7 +116,7 @@ export function addFriendRequest(fromUser: User, toUser: User): boolean {
     if (exits) return false;
     toUser.friendRequests.push({
         from: fromUser.userId,
-        nickname: fromUser.nickname,
+        username: fromUser.username,
         avatar: fromUser.avatar,
         status: 'pending'
     });
@@ -114,6 +130,7 @@ export function respondFriendRequest(toUser: User, fromUserId: string, agree: bo
     req.status = agree ? 'accepted' : 'rejected';
     if(agree){
         addFriend(toUser.userId, fromUserId);
+        return true;
     }
     saveUsers();
     return true;
@@ -129,18 +146,40 @@ export function deleteFriend(userId: string, friendId: string): boolean {
     return true;
 }
 
-export function getFriendInfo(userId: string): { userId: string; nickname: string; avatar: string } | null {
+export function getFriendInfo(userId: string): { userId: string; username: string; avatar: string } | null {
     const user = findByUserId(userId);
     if(!user) return null;
     return {
         userId: user.userId,
-        nickname: user.nickname,
+        username: user.username,
         avatar: user.avatar
     };
 }
 
-export function getFriendsList(user: User):  Array<{ userId: string; nickname: string; avatar: string }> {
+export function getFriendsList(user: User):  Array<{ userId: string; username: string; avatar: string }> {
     return user.friends
     .map(fid => getFriendInfo(fid))
-    .filter((f): f is {userId: string; nickname: string; avatar: string} => f !== null)
+    .filter((f): f is {userId: string; username: string; avatar: string} => f !== null)
+}
+
+export function incrementUnread(userId: string, targetId: string): void {
+    const user = findByUserId(userId);
+    if(!user) return;
+    if(!user.unreadCounts) user.unreadCounts = {};
+    user.unreadCounts[targetId] = (user.unreadCounts[targetId] || 0) + 1;
+    saveUsers();
+}
+
+export function clearUnread(userId: string, targetId: string): void {
+    const user = findByUserId(userId);
+    if(!user) return;
+    if(!user.unreadCounts) user.unreadCounts = {};
+    user.unreadCounts[targetId] = 0;
+    saveUsers();
+}
+
+export function getUnreadCounts(userId: string): Record<string, number> {
+    const user = findByUserId(userId);
+    if(!user || !user.unreadCounts) return {};
+    return user.unreadCounts;
 }
