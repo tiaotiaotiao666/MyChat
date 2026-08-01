@@ -1,0 +1,18 @@
+# Server
+server/node_modules/
+server/dist/
+server/data/
+
+# Client (HarmonyOS)
+client/node_modules/
+client/oh_modules/
+client/local.properties
+client/.idea/
+client/**/build/
+client/.hvigor/
+client/.cxx/
+client/.clangd/
+client/.clang-format/
+client/.clang-tidy/
+client/**/.test/
+client/.appanalyzer/

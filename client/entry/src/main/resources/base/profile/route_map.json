@@ -1,0 +1,39 @@
+{
+  "routerMap": [
+    {
+      "name": "LoginPage",
+      "pageSourceFile": "src/main/ets/pages/LoginPage.ets",
+      "buildFunction": "LoginPageBuilder"
+    },
+    {
+      "name": "ChatListPage",
+      "pageSourceFile": "src/main/ets/pages/chatListPage.ets",
+      "buildFunction": "ChatListPageBuilder"
+    },
+    {
+      "name": "ChatPage",
+      "pageSourceFile": "src/main/ets/pages/ChatPage.ets",
+      "buildFunction": "ChatPageBuilder"
+    },
+    {
+      "name": "AddFriendPage",
+      "pageSourceFile": "src/main/ets/pages/AddFriendPage.ets",
+      "buildFunction": "AddFriendPageBuilder"
+    },
+    {
+      "name": "CreateGroupPage",
+      "pageSourceFile": "src/main/ets/pages/CreateGroupPage.ets",
+      "buildFunction": "CreateGroupPageBuilder"
+    },
+    {
+      "name": "SearchGroupPage",
+      "pageSourceFile": "src/main/ets/pages/SearchGroupPage.ets",
+      "buildFunction": "SearchGroupPageBuilder"
+    },
+    {
+      "name": "GroupDetailPage",
+      "pageSourceFile": "src/main/ets/pages/GroupDetailPage.ets",
+      "buildFunction": "GroupDetailPageBuilder"
+    }
+  ]
+}
