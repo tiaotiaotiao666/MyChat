@@ -85,7 +85,9 @@ function getWsIp(ws: WebSocket & { _socket?: { remoteAddress?: string } }): stri
 // 没有心跳的话，僵尸连接会一直占着clientMap里的在线名额，顶号/在线状态全乱
 const HEARTBEAT_INTERVAL_MS = 30 * 1000;
 
-const wss = new WebSocketServer({ port: 3500 });
+// 安全加固#9：单帧上限64KiB——以前默认100MiB，一条消息就能把内存吃爆；
+// 超限帧在ws层触发error事件，由第0刀加的error监听负责断开该连接
+const wss = new WebSocketServer({ port: 3500, maxPayload: 64 * 1024 });
 
 // 安全加固#1（服务器级）：端口被占用这类错误以前没人监听，会作为未捕获异常把进程打崩
 wss.on('error', (err) => {

@@ -61,8 +61,18 @@ export function handleRegister(msg: IncomingMessage, ctx: ClientContext): Outgoi
         result.push({type: 'register_response', data: {success: false, error: '用户名长度应在3到20个字符之间'}});
         return result;
     }
-    if(password.length < 6 ){
-        result.push({type: 'register_response', data: {success: false, error: '密码长度应不少于6个字符'}});
+    if(password.length < 6 || password.length > 64 ){
+        // 安全加固#9：补上限——64位足够任何人用了，超长密码只会拖慢scrypt白吃CPU
+        result.push({type: 'register_response', data: {success: false, error: '密码长度应在6到64个字符之间'}});
+        return result;
+    }
+    if(!/^[\u4e00-\u9fa5A-Za-z0-9_]+$/.test(username)){
+        // 安全加固#9：用户名字符集白名单——挡掉空格/控制字符/花式符号，缩小注入面
+        result.push({type: 'register_response', data: {success: false, error: '用户名只能包含中文、字母、数字和下划线'}});
+        return result;
+    }
+    if(avatar.length > 32){
+        result.push({type: 'register_response', data: {success: false, error: '头像参数异常'}});
         return result;
     }
     const existing = userStore.findByUsername(username);
@@ -84,14 +94,13 @@ export function handleLogin(msg: IncomingMessage, ctx: ClientContext): OutgoingM
         return result;
     }
     const user = userStore.findByUsername(username);
-    if(!user){
-        result.push({type: 'login_response', data: {success: false, error: '用户不存在'}});
+    // 安全加固#9：两种失败统一话术——以前"用户不存在"和"密码错误"分开报，
+    // 攻击者可以拿它当名单用，批量探测哪些用户名注册过
+    if(!user || !userStore.verifyPassword(user, password)){
+        result.push({type: 'login_response', data: {success: false, error: '用户名或密码错误'}});
         return result;
     }
-    if(!userStore.verifyPassword(user, password)){
-        result.push({type: 'login_response', data: {success: false, error: '密码错误'}});
-        return result;
-    }
+    userStore.upgradePasswordIfNeeded(user, password); // 老格式账号登录一次即洗白成scrypt
     ctx.userId = user.userId;
     return buildAuthSuccess('login_response', user, true);
 }

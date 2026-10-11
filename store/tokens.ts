@@ -13,6 +13,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
+import { atomicWriteFileSync, safeReadJson } from './fsutil';
 
 export interface TokenEntry {
     token: string;      // 通行证本体：64个十六进制字符（32字节随机数）
@@ -27,10 +28,7 @@ const TOKENS_FILE = path.join(DATA_DIR, 'tokens.json');
 const MAX_TOKENS_PER_USER = 5; // 每用户最多几张通行证（手机+平板+模拟器...留5个够用）
 
 function safeReadTokens(): TokenEntry[] {
-    if(!fs.existsSync(TOKENS_FILE)) return [];
-    const raw = fs.readFileSync(TOKENS_FILE, 'utf-8');
-    if(raw.trim() === '') return [];
-    return JSON.parse(raw) as TokenEntry[];
+    return safeReadJson<TokenEntry[]>(TOKENS_FILE, []);
 }
 
 export function loadTokens(){
@@ -44,7 +42,7 @@ export function saveTokens(){
     if(!fs.existsSync(DATA_DIR)){
         fs.mkdirSync(DATA_DIR, { recursive: true });
     }
-    fs.writeFileSync(TOKENS_FILE, JSON.stringify(tokens, null, 2), 'utf-8');
+    atomicWriteFileSync(TOKENS_FILE, JSON.stringify(tokens, null, 2));
 }
 
 // 签发新token：32字节密码学随机数（猜中概率约2^-256，不用惦记）

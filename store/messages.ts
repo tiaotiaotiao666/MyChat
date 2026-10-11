@@ -1,4 +1,5 @@
 ﻿import * as fs from 'fs';
+import { atomicWriteFileSync, safeReadJson } from './fsutil';
 import * as path from 'path';
 
 const PRIVATE_DIR = path.join(__dirname, '..', 'data', 'messages', 'private');
@@ -19,10 +20,7 @@ interface Message{
 let nextMessageId = 3001;
 
 function safeReadMessages(filePath: string): Message[] {
-    if(!fs.existsSync(filePath)) return [];
-    const raw = fs.readFileSync(filePath, 'utf-8');
-    if(raw.trim() === '') return [];
-    return JSON.parse(raw) as Message[];
+    return safeReadJson<Message[]>(filePath, []);
 }
 
 export function loadMessages() {
@@ -77,7 +75,7 @@ export function savePrivateMessage(sender: string, senderUsername: string, sende
         console.warn(`[messages] private ${sender}<->${target}: 丢弃最早 ${dropped} 条消息（超过500条上限）`);
         messages.splice(0, messages.length - 500);
     }
-    fs.writeFileSync(filePath, JSON.stringify(messages, null, 2), 'utf-8');
+    atomicWriteFileSync(filePath, JSON.stringify(messages, null, 2));
     return msg;
 }
 
@@ -101,7 +99,7 @@ export function saveGroupMessage(sender: string, senderUsername: string, senderA
         console.warn(`[messages] group ${groupId}: 丢弃最早 ${dropped} 条消息（超过500条上限）`);
         messages.splice(0, messages.length - 500);
     }
-    fs.writeFileSync(filePath, JSON.stringify(messages, null, 2), 'utf-8');
+    atomicWriteFileSync(filePath, JSON.stringify(messages, null, 2));
     return msg;
 }
 

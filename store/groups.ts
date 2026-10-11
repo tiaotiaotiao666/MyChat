@@ -1,6 +1,8 @@
 ﻿import * as fs from 'fs';
 import * as path from 'path';
+import * as crypto from 'crypto';
 import { getFriendInfo } from './users';
+import { atomicWriteFileSync, safeReadJson } from './fsutil';
 
 
 export interface JoinRequest{
@@ -25,10 +27,7 @@ const DATA_DIR = path.join(__dirname, '..', 'data');
 const GROUPS_FILE = path.join(DATA_DIR,'groups.json');
 
 function safeReadGroups(): Group[] {
-    if(!fs.existsSync(GROUPS_FILE)) return [];
-    const raw = fs.readFileSync(GROUPS_FILE, 'utf-8');
-    if(raw.trim() === '') return [];
-    return JSON.parse(raw) as Group[];
+    return safeReadJson<Group[]>(GROUPS_FILE, []);
 }
 
 export function loadGroups() {
@@ -53,7 +52,7 @@ export function saveGroups() {
     if(!fs.existsSync(DATA_DIR)){
         fs.mkdirSync(DATA_DIR, { recursive: true });
     }
-    fs.writeFileSync(GROUPS_FILE, JSON.stringify(groups, null, 2), 'utf-8');
+    atomicWriteFileSync(GROUPS_FILE, JSON.stringify(groups, null, 2));
 }
 
 export function findByGroupId(groupId: string): Group | undefined {

@@ -20,6 +20,11 @@ export function handleCreateGroup(msg: IncomingMessage, ctx: ClientContext, broa
         result.push({type: 'error', data: {code: 400, message: '群组名称不能为空'}});
         return result;
     }
+    if(groupName.length > 20){
+        // 安全加固#9：群名上限（和前端输入框的合理长度对齐）
+        result.push({type: 'error', data: {code: 400, message: '群名最长20个字符'}});
+        return result;
+    }
     if(groupStore.existsByGroupName(groupName)){
         result.push({type: 'error', data: {code: 400, message: '群名已存在，请换一个'}});
         return result;

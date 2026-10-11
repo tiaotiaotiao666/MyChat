@@ -28,6 +28,11 @@ export function handlePrivateMessage(msg: IncomingMessage, ctx: ClientContext, b
         });
         return result;
     }
+    // 安全加固#9：长度上限——超长消息白吃内存/带宽，2000字足够聊天用
+    if (content.length > 2000) {
+        result.push({ type: 'error', data: { code: 400, message: '消息太长（最多2000字）' } });
+        return result;
+    }
     const fromUser = userStore.findByUserId(ctx.userId);
     const toUser = userStore.findByUserId(targetUserId);
     if(!fromUser || !toUser){
@@ -112,6 +117,11 @@ export function handleGroupChat(msg: IncomingMessage, ctx: ClientContext, broadc
         });
         return result;
     }
+    // 安全加固#9：长度上限（群聊同规）
+    if (content.length > 2000) {
+        result.push({ type: 'error', data: { code: 400, message: '消息太长（最多2000字）' } });
+        return result;
+    }
     const fromUser = userStore.findByUserId(ctx.userId);
     const msg_saved = messageStore.saveGroupMessage(ctx.userId, fromUser?.username || '', fromUser?.avatar || '', groupId, content);
     for(const memberId of group.members){
@@ -189,6 +199,11 @@ export function handleGroupPrivate(msg: IncomingMessage, ctx: ClientContext, bro
                 message: '私聊内容不能为空'
             }
         });
+        return result;
+    }
+    // 安全加固#9：长度上限（群内私聊同规）
+    if (content.length > 2000) {
+        result.push({ type: 'error', data: { code: 400, message: '消息太长（最多2000字）' } });
         return result;
     }
     const fromUser = userStore.findByUserId(ctx.userId);
