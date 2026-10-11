@@ -65,13 +65,37 @@ function getWsIp(ws: WebSocket & { _socket?: { remoteAddress?: string } }): stri
     return 'unknown';
 }
 
+// 安全加固#2：心跳——每30秒ping一轮，连续两轮（60秒）没回pong就判死强拆
+// 为什么需要：模拟器休眠/强杀App这类"半开连接"永远不会触发close事件，
+// 没有心跳的话，僵尸连接会一直占着clientMap里的在线名额，顶号/在线状态全乱
+const HEARTBEAT_INTERVAL_MS = 30 * 1000;
+
 const wss = new WebSocketServer({ port: 3500 });
-wss.on('connection', (ws: WebSocket) => { 
+
+// 安全加固#1（服务器级）：端口被占用这类错误以前没人监听，会作为未捕获异常把进程打崩
+wss.on('error', (err) => {
+    console.error('[服务器错误]', err);
+});
+
+wss.on('connection', (ws: WebSocket) => {
     const ctx: ClientContext = {
         userId: null,
         ws: ws,
     };
+    // 心跳定时器只拿得到ws对象，把ctx反挂在ws上它才能读到isAlive
+    (ws as any).ctx = ctx;
+    ctx.isAlive = true;
+    // 客户端每回一个pong，就重新点亮"还活着"标记
+    ws.on('pong', () => { ctx.isAlive = true; });
     const ip = getWsIp(ws as any);
+
+    // 安全加固#1（连接级）：必须监听error——ws库遇到畸形帧/无效UTF-8会emit('error')，
+    // 没人监听时Node把它当未捕获异常直接把整个进程打崩。
+    // 这就是"后端明明开着却连不上"的头号元凶：进程早死了，重启之后才"又能连上"
+    ws.on('error', (err) => {
+        console.error('[连接错误]', err);
+        try { ws.close(); } catch (_) { /* 连接已经坏了，优雅关闭失败就随它去 */ }
+    });
 
     ws.on('message', (rawData: any) => { 
         try{
@@ -91,7 +115,24 @@ wss.on('connection', (ws: WebSocket) => {
         const msg: IncomingMessage = JSON.parse(data);
         let result: OutgoingMessage[] = [];
 
+        // 安全加固#5：登出协议——以前服务端根本不认识logout消息，
+        // 前端退出登录只能靠掐断TCP，服务端全靠close事件善后；
+        // 半开连接下close不来，旧账号就一直"假在线"。现在显式登出：清映射→回执→关连接
+        // （logout要动clientMap和连接本身，这俩都是server.ts的私产，所以不拆去handlers）
+        if (msg.type === 'logout') {
+            if (ctx.userId && clientMap.get(ctx.userId) === ws) {
+                clientMap.delete(ctx.userId);
+            }
+            ctx.userId = null;
+            ctx.ws.send(JSON.stringify({ type: 'logout_response', data: { success: true } }));
+            try { ws.close(); } catch (_) { /* 忽略 */ }
+            return;
+        }
+
         // Bug7：登录限速（login和register都基于用户名+ip）
+        // 安全加固#3：记下这条连接登录前的旧身份——同一条socket换账号登录时要用它清理悬挂条目
+        const prevUserId = ctx.userId;
+
         if (msg.type === 'login' || msg.type === 'register') {
             const uname = String(((msg.data && msg.data.username) ?? '')).slice(0, 64) || '_';
             const rateKey = `${uname}:${ip}`;
@@ -113,7 +154,13 @@ wss.on('connection', (ws: WebSocket) => {
             // 记录失败/成功
             const resp = result[0] && result[0].data;
             if (resp && resp.success === false) {
-                recordLoginFailure(rateKey);
+                // 安全加固#6：只有"用户名密码都带齐、真的凭据被拒"才烧限速额度——
+                // 以前缺字段的失败也计数，前端自动重试几次就能把额度烧光，
+                // 之后连正确的密码也会被"尝试过于频繁"拒之门外（"有时登不上"的来源之一）
+                const hasCreds = !!(msg.data && msg.data.username && msg.data.password);
+                if (hasCreds) {
+                    recordLoginFailure(rateKey);
+                }
             } else if (resp && resp.success === true) {
                 recordLoginSuccess(rateKey);
             }
@@ -181,8 +228,16 @@ wss.on('connection', (ws: WebSocket) => {
         // 先注册 clientMap，再发送 result，确保 broadcastTo 能找到当前用户
         // （否则好友请求、群邀请等广播消息会丢失）
         if((msg.type === 'login' || msg.type === 'register' ) && ctx.userId){
+            // 安全加固#3：同一条socket换账号登录，先删掉旧账号的映射条目——
+            // 不删的话条目永久悬挂，旧账号以后在别处登录时，顶号逻辑会误把这个socket关掉
+            if(prevUserId && prevUserId !== ctx.userId && clientMap.get(prevUserId) === ws){
+                clientMap.delete(prevUserId);
+            }
             const oldWs = clientMap.get(ctx.userId);
             if(oldWs && oldWs !== ws){
+                // 安全加固#4：顶号前先发一条kicked再关——被踢端要靠它提示用户、拦停自动重连；
+                // 不打招呼直接close，被踢端只会没头没脑地重连再被踢，来回踢皮球
+                try { oldWs.send(JSON.stringify({ type: 'kicked', data: { reason: '账号在其他设备登录' } })); } catch(e) { /* 旧连接可能已死，发不进就算了 */ }
                 try { oldWs.close(); } catch(e) { /* 忽略关闭异常 */ }
             }
             clientMap.set(ctx.userId, ws);
@@ -205,5 +260,21 @@ wss.on('connection', (ws: WebSocket) => {
     });
 
 });
+
+// 安全加固#2：心跳总开关——每30秒对所有连接点名一次：
+// isAlive还是false = 上一轮ping没回 = 连着两轮失联 = 判死，terminate()强拆
+// （terminate比close狠：不等关闭握手直接掐TCP，专治装死的连接）
+const heartbeatTimer = setInterval(() => {
+    wss.clients.forEach((client) => {
+        const c = (client as any).ctx as ClientContext | undefined;
+        if (!c || !c.isAlive) {
+            try { client.terminate(); } catch (_) { /* ignore */ }
+            return;
+        }
+        c.isAlive = false;
+        try { client.ping(); } catch (_) { /* ignore */ }
+    });
+}, HEARTBEAT_INTERVAL_MS);
+wss.on('close', () => clearInterval(heartbeatTimer));
 
 console.log('服务器启动，端口 3500');
