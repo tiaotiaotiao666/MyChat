@@ -7,17 +7,30 @@ import * as group from './handlers/group'
 import * as userStore from './store/users'
 import * as groupStore from './store/groups'
 import * as messageStore from './store/messages'
+import { SessionCrypto } from './crypto/session'
 
 userStore.loadUsers()
 groupStore.loadGroups()
 messageStore.loadMessages()
 
 const clientMap = new Map<string, WebSocket>();
+// 安全加固#7：每条连接的加密会话——key_exchange握手成功后才有一条
+const sessions = new Map<WebSocket, SessionCrypto>();
+
+// 统一出站口：有会话的连接一律加密后再发，没有会话（握手前）按明文发。
+// 所有发给客户端的消息都必须走这里——漏掉一个出口就是一处明文泄漏
+function sendTo(ws: WebSocket, msg: OutgoingMessage){
+    const sess = sessions.get(ws);
+    const wire = sess ? sess.encryptMsg(msg) : msg;
+    try {
+        ws.send(JSON.stringify(wire));
+    } catch (e) { /* 对端可能已断开，发不进就算了 */ }
+}
 
 function broadcastTo(userId: string, msg: OutgoingMessage){
     const ws = clientMap.get(userId);
     if(ws){
-        ws.send(JSON.stringify(msg));
+        sendTo(ws, msg);
     }
 }
 
@@ -108,12 +121,25 @@ wss.on('connection', (ws: WebSocket) => {
         } else if (typeof (rawData as any).toString === 'function') {
             data = (rawData as any).toString('utf-8');
         } else {
-            ctx.ws.send(JSON.stringify({type: 'error', data: {code: 400, message: '消息格式错误'}}));
+            sendTo(ws, {type: 'error', data: {code: 400, message: '消息格式错误'}});
             return;
         }
 
         const msg: IncomingMessage = JSON.parse(data);
         let result: OutgoingMessage[] = [];
+
+        // 安全加固#7（入站）：已握手的连接，data字段是密文信封，先解再分发。
+        // GCM校验不过 = 密文被篡改或密钥错位，这种连接不能再信，直接断
+        const sess = sessions.get(ws);
+        if (sess && msg.type !== 'key_exchange') {
+            try {
+                msg.data = sess.decryptData(msg.data);
+            } catch (e) {
+                console.error('[会话] 解密失败，断开该连接', e);
+                try { ws.close(); } catch (_) { /* ignore */ }
+                return;
+            }
+        }
 
         // 安全加固#5：登出协议——以前服务端根本不认识logout消息，
         // 前端退出登录只能靠掐断TCP，服务端全靠close事件善后；
@@ -124,8 +150,25 @@ wss.on('connection', (ws: WebSocket) => {
                 clientMap.delete(ctx.userId);
             }
             ctx.userId = null;
-            ctx.ws.send(JSON.stringify({ type: 'logout_response', data: { success: true } }));
+            sendTo(ws, { type: 'logout_response', data: { success: true } });
             try { ws.close(); } catch (_) { /* 忽略 */ }
+            return;
+        }
+
+        // 安全加固#7（握手）：客户端连上后的第一件事——发来它的ECC公钥。
+        // 服务端回自己的公钥+随机盐，两边各自算出同一把AES会话密钥，此后data全走密文
+        if (msg.type === 'key_exchange') {
+            const pubB64 = (msg.data && typeof msg.data.pub === 'string') ? msg.data.pub : '';
+            try {
+                const hello = SessionCrypto.establish(pubB64);
+                // 回执必须明文发（此刻会话还没注册），发完立刻注册——之后的收发全走密文
+                ctx.ws.send(JSON.stringify({ type: 'key_exchange_response', data: hello.response }));
+                sessions.set(ws, hello.session);
+                console.log('[会话] 加密握手完成');
+            } catch (e) {
+                console.error('[会话] 握手失败（公钥无效？）', e);
+                sendTo(ws, { type: 'error', data: { code: 400, message: '握手失败' } });
+            }
             return;
         }
 
@@ -137,10 +180,10 @@ wss.on('connection', (ws: WebSocket) => {
             const uname = String(((msg.data && msg.data.username) ?? '')).slice(0, 64) || '_';
             const rateKey = `${uname}:${ip}`;
             if (isLoginRateLimited(rateKey)) {
-                ctx.ws.send(JSON.stringify({
+                sendTo(ws, {
                     type: msg.type === 'login' ? 'login_response' : 'register_response',
                     data: { success: false, error: '尝试过于频繁，请稍后再试' }
-                }));
+                });
                 return;
             }
             switch(msg.type){
@@ -237,18 +280,18 @@ wss.on('connection', (ws: WebSocket) => {
             if(oldWs && oldWs !== ws){
                 // 安全加固#4：顶号前先发一条kicked再关——被踢端要靠它提示用户、拦停自动重连；
                 // 不打招呼直接close，被踢端只会没头没脑地重连再被踢，来回踢皮球
-                try { oldWs.send(JSON.stringify({ type: 'kicked', data: { reason: '账号在其他设备登录' } })); } catch(e) { /* 旧连接可能已死，发不进就算了 */ }
+                sendTo(oldWs, { type: 'kicked', data: { reason: '账号在其他设备登录' } }); // 旧连接有会话就密文，没有就明文；sendTo内部已兜发送异常
                 try { oldWs.close(); } catch(e) { /* 忽略关闭异常 */ }
             }
             clientMap.set(ctx.userId, ws);
         }
         for(const r of result){
-            ctx.ws.send(JSON.stringify(r));
+            sendTo(ws, r);
         }
     } catch(e){
         try { console.log(e); } catch(_) { /* ignore */ }
         try {
-            ctx.ws.send(JSON.stringify({type: 'error', data: {code: 400, message: '消息格式错误'}}));
+            sendTo(ws, {type: 'error', data: {code: 400, message: '消息格式错误'}});
         } catch(_) { /* ignore */ }
     }
     });
