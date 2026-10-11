@@ -1,3 +1,9 @@
 node_modules/
 dist/
 data/
+
+# 安全加固#3补充：tsc编译产物不入库（运行时用tsx直跑.ts；tests/下的js是手写源码，不忽略）
+/*.js
+/handlers/*.js
+/store/*.js
+/crypto/*.js
