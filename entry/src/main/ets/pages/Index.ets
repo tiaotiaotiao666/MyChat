@@ -44,18 +44,18 @@ struct Index {
     ws.connect(WS_SERVER_URL)
 
     let savedUsername: string = ''
-    let savedPassword: string = ''
+    let savedToken: string = ''
     try {
       let context = AppStorage.get<Context>('context')
       if (context !== undefined) {
         let pref = preferences.getPreferencesSync(context, { name: 'loginStore' })
         savedUsername = pref.getSync('username', '') as string
-        savedPassword = pref.getSync('password', '') as string
+        savedToken = pref.getSync('token', '') as string // 安全加固#8：只存token，密码不再落盘
       }
     } catch (e) {
     }
 
-    let hasSavedLogin = savedUsername !== '' && savedPassword !== ''
+    let hasSavedLogin = savedUsername !== '' && savedToken !== ''
 
     // 自动登录回调——只处理一次，不管成功失败都移除
     let loginTimeoutTimer: number = -1
@@ -109,12 +109,13 @@ struct Index {
     let armAutoLogin = (): void => {
       ws.addMessageListener(autoLoginCallback)
       autoLoginInFlight = true
+      // 安全加固#8：凭token续登（login_token）——密码只在手动登录时出门一次
       let loginData: Record<string, string> = {
         'username': savedUsername,
-        'password': savedPassword
+        'token': savedToken
       }
       let loginMsg: Record<string, Object> = {
-        'type': 'login',
+        'type': 'login_token',
         'data': loginData
       }
       ws.send(JSON.stringify(loginMsg))

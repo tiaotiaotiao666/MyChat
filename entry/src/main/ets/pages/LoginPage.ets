@@ -185,7 +185,9 @@ struct LoginPage {
                          if (context !== undefined) {
                            let pref = preferences.getPreferencesSync(context, { name: 'loginStore' })
                            pref.putSync('username', this.username)
-                           pref.putSync('password', this.password)
+                           // 安全加固#8：存token不存密码——token丢了可作废重发，密码丢了账号就没了
+                           pref.putSync('token', (msgData['token'] ?? '') as string)
+                           pref.deleteSync('password') // 兼容清理：老版本存过的明文密码顺手洗掉
                            pref.flush(() => {})
                          }
                        } catch (e) {
@@ -202,7 +204,9 @@ struct LoginPage {
                         if (context !== undefined) {
                           let pref = preferences.getPreferencesSync(context, { name: 'loginStore' })
                           pref.putSync('username', this.username)
-                          pref.putSync('password', this.password)
+                          // 安全加固#8：注册成功同样只发token不落密码
+                          pref.putSync('token', (msgData['token'] ?? '') as string)
+                          pref.deleteSync('password')
                           pref.flush(() => {})
                         }
                       } catch (e) {

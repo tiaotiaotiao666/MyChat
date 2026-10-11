@@ -637,10 +637,26 @@ struct ChatListPage {
   }
 
   logout(): void {
+    // 安全加固#8：先读出token并清掉本地凭据（token/用户名/老版本残留的明文密码）
+    let token = ''
+    try {
+      let context = AppStorage.get<Context>('context')
+      if (context !== undefined) {
+        let pref = preferences.getPreferencesSync(context, { name: 'loginStore' })
+        token = pref.getSync('token', '') as string
+        pref.deleteSync('username')
+        pref.deleteSync('token')
+        pref.deleteSync('password') // 兼容清理：老版本存过的明文密码
+        pref.flush(() => {})
+      }
+    } catch (e) {
+      // 忽略
+    }
     // 安全加固（Bug13修复）：先把登出消息发给服务端再断连接——顺序不能反，
     // disconnect()之后send()只会把消息压进离线队列，服务端永远收不到
-    // （data字段不带——服务端logout处理只看type，省得为空对象声明类型）
-    let logoutMsg: Record<string, string> = { 'type': 'logout' }
+    // logout捎带token：服务端当场作废这张通行证
+    let logoutData: Record<string, string> = { 'token': token }
+    let logoutMsg: Record<string, Object> = { 'type': 'logout', 'data': logoutData }
     WebSocketManager.getInstance().send(JSON.stringify(logoutMsg))
     AppStorage.setOrCreate('userId', '')
     AppStorage.setOrCreate('username', '')
@@ -656,17 +672,6 @@ struct ChatListPage {
     // 安全加固：清空离线队列——里面是上一个账号发的消息，换账号登录后被flush出去就串号了
     WebSocketManager.getInstance().clearPendingMessages()
     WebSocketManager.getInstance().disconnect()
-    try {
-      let context = AppStorage.get<Context>('context')
-      if (context !== undefined) {
-        let pref = preferences.getPreferencesSync(context, { name: 'loginStore' })
-        pref.deleteSync('username')
-        pref.deleteSync('password')
-        pref.flush(() => {})
-      }
-    } catch (e) {
-      // 忽略
-    }
     this.pageStack.clear()
     this.pageStack.pushPath({ name: 'LoginPage' })
   }
