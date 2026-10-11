@@ -113,6 +113,50 @@ async function main() {
         check('测2/测3 流程异常: ' + e.message, false);
     }
 
+    // ---------- 测5+6：token 签发/续登/吊销 ----------
+    try {
+        const ws1 = await open();
+        const sess1 = await handshake(ws1);
+        ws1.send(encrypt(sess1, 'login', { username: USERNAME, password: PASSWORD }));
+        const rawL = await new Promise((resolve, reject) => {
+            const t = setTimeout(() => reject(new Error('等login_response超时')), 5000);
+            ws1.on('message', (raw) => { clearTimeout(t); resolve(raw.toString()); });
+        });
+        const loginResp = decrypt(sess1, rawL);
+        const token = loginResp.data.token;
+        check('测5a：密码登录响应携带token', typeof token === 'string' && token.length === 64);
+        ws1.close();
+
+        // 新连接凭token免密续登
+        const ws2 = await open();
+        const sess2 = await handshake(ws2);
+        ws2.send(encrypt(sess2, 'login_token', { username: USERNAME, token: token }));
+        const rawT = await new Promise((resolve, reject) => {
+            const t = setTimeout(() => reject(new Error('等login_token响应超时')), 5000);
+            ws2.on('message', (raw) => { clearTimeout(t); resolve(raw.toString()); });
+        });
+        const tokenResp = decrypt(sess2, rawT);
+        check('测5b：login_token免密续登成功', tokenResp.data.success === true);
+        // logout 捎带token → 服务端吊销
+        ws2.send(encrypt(sess2, 'logout', { token: token }));
+        await sleep(600);
+        ws2.close();
+
+        // 被吊销的token再用来续登必须被拒
+        const ws3 = await open();
+        const sess3 = await handshake(ws3);
+        ws3.send(encrypt(sess3, 'login_token', { username: USERNAME, token: token }));
+        const rawR = await new Promise((resolve) => {
+            const t = setTimeout(() => resolve(null), 5000);
+            ws3.on('message', (raw) => { clearTimeout(t); resolve(raw.toString()); });
+        });
+        const rejResp = rawR ? decrypt(sess3, rawR) : null;
+        check('测6：登出后token已被吊销，续登被拒', !!(rejResp && rejResp.data.success === false));
+        ws3.close();
+    } catch (e) {
+        check('测5/测6 流程异常: ' + e.message, false);
+    }
+
     // ---------- 测4：篡改检测 ----------
     let tamperClosed = false;
     try {

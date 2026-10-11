@@ -7,11 +7,13 @@ import * as group from './handlers/group'
 import * as userStore from './store/users'
 import * as groupStore from './store/groups'
 import * as messageStore from './store/messages'
+import * as tokenStore from './store/tokens'
 import { SessionCrypto } from './crypto/session'
 
 userStore.loadUsers()
 groupStore.loadGroups()
 messageStore.loadMessages()
+tokenStore.loadTokens() // 安全加固#8：登录令牌（token续登用，服务重启不失效）
 
 const clientMap = new Map<string, WebSocket>();
 // 安全加固#7：每条连接的加密会话——key_exchange握手成功后才有一条
@@ -146,6 +148,11 @@ wss.on('connection', (ws: WebSocket) => {
         // 半开连接下close不来，旧账号就一直"假在线"。现在显式登出：清映射→回执→关连接
         // （logout要动clientMap和连接本身，这俩都是server.ts的私产，所以不拆去handlers）
         if (msg.type === 'logout') {
+            // 安全加固#8：logout捎带的token当场作废——通行证交还，别留一张还能用的
+            // （没有token字段也不报错，兼容老客户端/被顶号等没有token的场景）
+            if (msg.data && typeof msg.data.token === 'string') {
+                tokenStore.revokeToken(msg.data.token);
+            }
             if (ctx.userId && clientMap.get(ctx.userId) === ws) {
                 clientMap.delete(ctx.userId);
             }
@@ -176,12 +183,12 @@ wss.on('connection', (ws: WebSocket) => {
         // 安全加固#3：记下这条连接登录前的旧身份——同一条socket换账号登录时要用它清理悬挂条目
         const prevUserId = ctx.userId;
 
-        if (msg.type === 'login' || msg.type === 'register') {
+        if (msg.type === 'login' || msg.type === 'register' || msg.type === 'login_token') {
             const uname = String(((msg.data && msg.data.username) ?? '')).slice(0, 64) || '_';
             const rateKey = `${uname}:${ip}`;
             if (isLoginRateLimited(rateKey)) {
                 sendTo(ws, {
-                    type: msg.type === 'login' ? 'login_response' : 'register_response',
+                    type: msg.type === 'register' ? 'register_response' : 'login_response',
                     data: { success: false, error: '尝试过于频繁，请稍后再试' }
                 });
                 return;
@@ -193,6 +200,9 @@ wss.on('connection', (ws: WebSocket) => {
                 case 'register':
                     result = auth.handleRegister(msg, ctx);
                     break;
+                case 'login_token':
+                    result = auth.handleLoginToken(msg, ctx);
+                    break;
             }
             // 记录失败/成功
             const resp = result[0] && result[0].data;
@@ -200,7 +210,7 @@ wss.on('connection', (ws: WebSocket) => {
                 // 安全加固#6：只有"用户名密码都带齐、真的凭据被拒"才烧限速额度——
                 // 以前缺字段的失败也计数，前端自动重试几次就能把额度烧光，
                 // 之后连正确的密码也会被"尝试过于频繁"拒之门外（"有时登不上"的来源之一）
-                const hasCreds = !!(msg.data && msg.data.username && msg.data.password);
+                const hasCreds = !!(msg.data && msg.data.username && (msg.data.password || msg.data.token));
                 if (hasCreds) {
                     recordLoginFailure(rateKey);
                 }
@@ -270,7 +280,7 @@ wss.on('connection', (ws: WebSocket) => {
 
         // 先注册 clientMap，再发送 result，确保 broadcastTo 能找到当前用户
         // （否则好友请求、群邀请等广播消息会丢失）
-        if((msg.type === 'login' || msg.type === 'register' ) && ctx.userId){
+        if((msg.type === 'login' || msg.type === 'register' || msg.type === 'login_token') && ctx.userId){
             // 安全加固#3：同一条socket换账号登录，先删掉旧账号的映射条目——
             // 不删的话条目永久悬挂，旧账号以后在别处登录时，顶号逻辑会误把这个socket关掉
             if(prevUserId && prevUserId !== ctx.userId && clientMap.get(prevUserId) === ws){
