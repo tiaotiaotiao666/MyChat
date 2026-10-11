@@ -25,6 +25,16 @@ struct LoginPage {
   @State selectedAvatar: string = 'cat' // 注册时选的头像资源名
   @State errorMsg: string = '' // 错误提示红条（空=不显示）
 
+  aboutToAppear(): void {
+    // 安全加固：被顶号后ChatListPage会跳转到这里，把原因亮在错误红条上
+    // （kickReason由WebSocketManager拦截kicked消息时写入，读完就复位防止下次误报）
+    let reason = AppStorage.get<string>('kickReason')
+    if (reason !== undefined && reason !== '') {
+      this.errorMsg = reason
+      AppStorage.setOrCreate('kickReason', '')
+    }
+  }
+
   build() {
     NavDestination() {
       Scroll() {

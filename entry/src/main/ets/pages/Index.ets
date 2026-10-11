@@ -58,12 +58,15 @@ struct Index {
     let hasSavedLogin = savedUsername !== '' && savedPassword !== ''
 
     // 自动登录回调——只处理一次，不管成功失败都移除
+    let loginTimeoutTimer: number = -1
+    let autoLoginInFlight: boolean = false // Bug3修复：标记login请求已发起（防止800ms兜底打断）
     let autoLoginCallback = (data: string): void => {
       let msg = JSON.parse(data) as Record<string, Object>
       if (msg['type'] === 'login_response') {
         let msgData = msg['data'] as Record<string, Object>
         // 无论成功失败，都移除这个回调，不再拦截后续消息
         ws.removeMessageListener(autoLoginCallback)
+        autoLoginInFlight = false // 安全加固：登录请求已了结，下一次自动登录不再被它拦
         // 收到login响应时，顺手清掉登录超时定时器
         if (loginTimeoutTimer !== -1) {
           try { clearTimeout(loginTimeoutTimer) } catch (e) {}
@@ -80,26 +83,30 @@ struct Index {
           AppStorage.setOrCreate('groupJoinRequests', JSON.stringify(msgData['groupJoinRequests'] ?? []))
           this.pushIfEmpty('ChatListPage')
         } else {
-          // 登录失败，跳登录页让用户手动操作
-          this.pushIfEmpty('LoginPage')
+          // 安全加固：如果已经进过主页（pagePushed=true），说明这是"断线重连后重新登录"被拒
+          // ——本地必须清干净回登录页，不能停在"看着像登录了、其实每条消息都被拒401"的假在线状态
+          if (this.pagePushed) {
+            AppStorage.setOrCreate('userId', '')
+            AppStorage.setOrCreate('username', '')
+            AppStorage.setOrCreate('avatar', '')
+            AppStorage.setOrCreate('friends', '[]')
+            AppStorage.setOrCreate('groups', '[]')
+            AppStorage.setOrCreate('unreadCounts', '{}')
+            AppStorage.setOrCreate('friendRequests', '[]')
+            AppStorage.setOrCreate('groupJoinRequests', '[]')
+            this.pageStack.clear()
+            this.pageStack.pushPath({ name: 'LoginPage' })
+            this.pagePushed = true // 手动清栈重推后，保持"已推过页"的语义
+          } else {
+            // 首次自动登录失败，跳登录页让用户手动操作
+            this.pushIfEmpty('LoginPage')
+          }
         }
       }
     }
 
-    // 重连后的自动登录回调——同样只处理一次
-    let loginTimeoutTimer: number = -1
-    let autoLoginInFlight: boolean = false // Bug3修复：标记login请求已发起（防止800ms兜底打断）
-    let doAutoLogin = (): void => {
-      if (!hasSavedLogin) {
-        this.pushIfEmpty('LoginPage')
-        return
-      }
-      let currentUserId = AppStorage.get<string>('userId')
-      if (currentUserId !== undefined && currentUserId !== '') {
-        // userId已经存在，直接进主页，不要return什么都不做
-        this.pushIfEmpty('ChatListPage')
-        return
-      }
+    // 发登录请求 + 3秒超时保护（启动自动登录 / 重连重登共用这一套）
+    let armAutoLogin = (): void => {
       ws.addMessageListener(autoLoginCallback)
       autoLoginInFlight = true
       let loginData: Record<string, string> = {
@@ -124,6 +131,38 @@ struct Index {
           this.pushIfEmpty('LoginPage')
         }
       }, 3000) as number
+    }
+
+    // 启动自动登录：只在App刚打开时走一遍
+    let doAutoLogin = (): void => {
+      if (!hasSavedLogin) {
+        this.pushIfEmpty('LoginPage')
+        return
+      }
+      if (autoLoginInFlight) {
+        return // 安全加固：上一发登录还没回来，别重复挂监听+重复发（以前200ms兜底会撞出双份login）
+      }
+      let currentUserId = AppStorage.get<string>('userId')
+      if (currentUserId !== undefined && currentUserId !== '') {
+        // userId已经存在，直接进主页，不要return什么都不做
+        this.pushIfEmpty('ChatListPage')
+        return
+      }
+      armAutoLogin()
+    }
+
+    // 重连后的重新登录——和启动自动登录的关键区别：无条件重发login。
+    // 安全加固：服务端会话是跟着连接走的（每条新连接在服务端都是"未登录的陌生人"），
+    // 本地AppStorage里userId还在 ≠ 服务端还认你；重连后不重登就是假在线，所有消息都被401拒
+    let doReLogin = (): void => {
+      if (!hasSavedLogin) {
+        this.pushIfEmpty('LoginPage')
+        return
+      }
+      if (autoLoginInFlight) {
+        return
+      }
+      armAutoLogin()
     }
 
     // 兜底1：WS连上后，如果还没跳页（说明login消息还在队列里/或者被吞了），再触发一次doAutoLogin判断
@@ -154,7 +193,7 @@ struct Index {
       }
     }, 800)
 
-    ws.setOnReconnect(doAutoLogin)
+    ws.setOnReconnect(doReLogin) // 安全加固：重连后走无条件重登（会话跟着连接走）
     doAutoLogin()
   }
 

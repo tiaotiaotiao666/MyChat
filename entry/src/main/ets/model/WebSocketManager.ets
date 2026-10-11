@@ -13,6 +13,7 @@ class WebSocketManager {
   private reconnectTimer: number = -1 // 重连定时器ID（-1=没有排队中的重连，防重复排程）
   private reconnectDelay: number = 3000 // 下次重连间隔毫秒（指数退避：3s→6s→12s…封顶30s）
   private shouldReconnect: boolean = true // 还要不要自动重连（disconnect()置false=主动断，不重连）
+  private isConnecting: boolean = false // 正在建连中（connect已发出还没结果）——防连击时反复createConnection
   private isFirstConnect: boolean = true // 是不是第一次连上（首连不算"重连"，不触发重连回调）
   private onReconnectCallback: (() => void) | undefined = undefined // 重连成功后干什么（Index注册=重连后自动登录）
   private openListeners: (() => void)[] = [] // 一次性open监听：连上就触发、然后清空（如"连上后才发登录"）
@@ -29,12 +30,18 @@ class WebSocketManager {
   }
 
   connect(url: string): void {
-    // 防重入：如果正在连接中，不重复创建
-    if (this.isConnect) {
+    // 防重入：已连接或正在建连中，不重复创建
+    if (this.isConnect || this.isConnecting) {
       return
     }
     this.url = url
     this.shouldReconnect = true
+    // 安全加固：清掉排队中的重连定时器、立即建连——
+    // 不然登录页发的第一条消息要等最多30s的重连间隔才发出去，用户只会看到"连接超时"
+    if (this.reconnectTimer !== -1) {
+      try { clearTimeout(this.reconnectTimer) } catch (e) {}
+      this.reconnectTimer = -1
+    }
     this.createConnection()
   }
 
@@ -57,6 +64,7 @@ class WebSocketManager {
       if (!error) {
         console.info('[WS] 连接成功')
         this.isConnect = true
+        this.isConnecting = false
         this.reconnectDelay = 3000
         // 连上后，发送队列中缓存的消息
         this.flushPendingMessages()
@@ -88,6 +96,19 @@ class WebSocketManager {
           let decoder = util.TextDecoder.create('utf-8')
           str = decoder.decodeToString(view)
         }
+        // 安全加固：顶号拦截——服务端踢人前会先发一条kicked再关连接。
+        // 必须抢在分发给页面之前拦下：关掉自动重连（否则close后自动重连又拿存档凭据
+        // 登回来，跟顶号者互相踢皮球打个没完），再把原因写进AppStorage给页面提示用
+        try {
+          let parsed = JSON.parse(str) as Record<string, Object>
+          if (parsed['type'] === 'kicked') {
+            this.shouldReconnect = false
+            let kd = parsed['data'] as Record<string, Object>
+            let reason = (kd !== undefined && kd['reason'] !== undefined) ? kd['reason'] as string : '账号在其他设备登录'
+            AppStorage.setOrCreate('kickReason', reason)
+          }
+        } catch (e) {
+        }
         for (let i = 0; i < this.callbacks.length; i++) {
           this.callbacks[i](str)
         }
@@ -97,6 +118,7 @@ class WebSocketManager {
     this.ws.on('close', () => {
       console.info('[WS] 连接关闭')
       this.isConnect = false
+      this.isConnecting = false
       if (this.shouldReconnect) {
         this.scheduleReconnect()
       }
@@ -105,16 +127,19 @@ class WebSocketManager {
     this.ws.on('error', () => {
       console.error('[WS] 连接错误')
       this.isConnect = false
+      this.isConnecting = false
       if (this.shouldReconnect) {
         this.scheduleReconnect()
       }
     })
 
     try {
+      this.isConnecting = true
       this.ws.connect(this.url)
     } catch (e) {
       console.error(`[WS] connect 调用异常: ${JSON.stringify(e)}`)
       this.isConnect = false
+      this.isConnecting = false
       if (this.shouldReconnect) {
         this.scheduleReconnect()
       }
@@ -182,7 +207,16 @@ class WebSocketManager {
     } else {
       // WS未连接，消息入队
       this.pendingMessages.push(msg)
+      // 安全加固（Bug12修复）：顺手把连接建起来——以前登出后shouldReconnect被关死，
+      // 登录页发的login消息只进队列、永远没人负责重连，表现为"退出登录后再也登不上"
+      this.connect(this.url)
     }
+  }
+
+  // 清空离线队列：登出这种"会话边界"时必须调——队列里排的是上一个账号发的消息，
+  // 换账号登录后被flush出去就串号了
+  clearPendingMessages(): void {
+    this.pendingMessages = []
   }
 
   isConnected(): boolean {

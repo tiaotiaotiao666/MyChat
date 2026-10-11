@@ -66,6 +66,9 @@ struct ChatListPage {
   @State userId: string = '' // 我的账号（login后从AppStorage读，Tab4展示）
   @State username: string = ''
   @State avatar: string = ''
+  // 安全加固：被顶号信号——WebSocketManager拦截到kicked消息时写AppStorage.kickReason，
+  // 这里用@Watch观察它。被顶号可能发生在任何页面，主页面负责统一善后
+  @StorageProp('kickReason') @Watch('onKicked') kickReason: string = ''
   @State showFriendMenu: boolean = false // Tab2右上"+"弹出菜单开合
   @State currentTab: number = 0 // 当前Tab下标（0消息/1好友/2通知/3我的）
   @State currentChatTargetId: string = '' // 当前正在看的聊天targetId，用于屏蔽未读
@@ -611,14 +614,47 @@ struct ChatListPage {
     AppStorage.setOrCreate('groups', JSON.stringify(newArr))
   }
 
-  logout(): void {
+  // ========== 安全加固：被顶号善后 ==========
+  // 服务端已经销毁了我们的会话并关了连接（WS管理器已拦停重连），这里只管本地收拾。
+  // 注意不能调logout()：那个会给服务端发logout消息（会话已经没了，发了也白发），
+  // 还会删preferences凭据——被顶号≠凭据失效，留着下次一键登录
+  onKicked(): void {
+    if (this.kickReason === '') {
+      return // 复位空值触发的watch，忽略
+    }
     AppStorage.setOrCreate('userId', '')
     AppStorage.setOrCreate('username', '')
     AppStorage.setOrCreate('avatar', '')
     AppStorage.setOrCreate('friends', '[]')
     AppStorage.setOrCreate('groups', '[]')
+    AppStorage.setOrCreate('unreadCounts', '{}')
+    AppStorage.setOrCreate('friendRequests', '[]')
+    AppStorage.setOrCreate('groupJoinRequests', '[]')
+    WebSocketManager.getInstance().clearPendingMessages()
+    this.pageStack.clear()
+    this.pageStack.pushPath({ name: 'LoginPage' })
+    // kickReason不在这里清：留着给LoginPage读出来提示用户，它显示完自己复位
+  }
+
+  logout(): void {
+    // 安全加固（Bug13修复）：先把登出消息发给服务端再断连接——顺序不能反，
+    // disconnect()之后send()只会把消息压进离线队列，服务端永远收不到
+    // （data字段不带——服务端logout处理只看type，省得为空对象声明类型）
+    let logoutMsg: Record<string, string> = { 'type': 'logout' }
+    WebSocketManager.getInstance().send(JSON.stringify(logoutMsg))
+    AppStorage.setOrCreate('userId', '')
+    AppStorage.setOrCreate('username', '')
+    AppStorage.setOrCreate('avatar', '')
+    AppStorage.setOrCreate('friends', '[]')
+    AppStorage.setOrCreate('groups', '[]')
+    // 安全加固：这三样以前漏清了——换账号登录后，上一个账号的未读数/申请列表会残留串号
+    AppStorage.setOrCreate('unreadCounts', '{}')
+    AppStorage.setOrCreate('friendRequests', '[]')
+    AppStorage.setOrCreate('groupJoinRequests', '[]')
     // 清除WS重连回调，防止退出登录后WS重连又自动登录回来
     WebSocketManager.getInstance().setOnReconnect(undefined)
+    // 安全加固：清空离线队列——里面是上一个账号发的消息，换账号登录后被flush出去就串号了
+    WebSocketManager.getInstance().clearPendingMessages()
     WebSocketManager.getInstance().disconnect()
     try {
       let context = AppStorage.get<Context>('context')
